@@ -111,10 +111,21 @@ input:focus,select:focus,textarea:focus{outline:2px solid #e60023;border-color:#
 const $ = id => document.getElementById(id);
 let lastOrder = null;
 const agentParam = new URLSearchParams(location.search).get('agent') || '';
-// 显示归属人（只显示名字，不显示账号密码）
+let agentExpired = false;
+// 显示归属人（只显示名字，不显示账号密码）；过期账号显示已到期、禁用提交
 fetch('/api/agents').then(r => r.json()).then(list => {
   const a = list.find(x => x.username === agentParam);
-  if (a) { const el = $('agentBanner'); el.style.display = 'block'; el.textContent = '本次下单对接人：' + a.displayName; }
+  if (a) {
+    const el = $('agentBanner'); el.style.display = 'block';
+    if (a.expired) {
+      agentExpired = true;
+      el.style.color = '#e60023';
+      el.textContent = '该对接人账号已到期，暂时无法下单，请联系总账号续费';
+      $('submitBtn').disabled = true; $('submitBtn').textContent = '账号已到期，无法下单';
+    } else {
+      el.textContent = '本次下单对接人：' + a.displayName + (a.daysLeft != null && a.daysLeft <= 3 ? '（账号 ' + a.daysLeft + ' 天后到期）' : '');
+    }
+  }
 }).catch(() => {});
 
 document.querySelectorAll('#tiers .chip').forEach(c => c.onclick = () => {
@@ -215,7 +226,7 @@ $('submitBtn').onclick = async () => {
     $('formCard').style.display = 'none'; $('successCard').style.display = 'block';
     window.scrollTo(0,0);
   } catch(e){ $('err').textContent = e.message; }
-  finally { $('submitBtn').disabled = false; $('submitBtn').textContent = '提交订单'; }
+  finally { if (agentExpired) { $('submitBtn').disabled = true; $('submitBtn').textContent = '账号已到期，无法下单'; } else { $('submitBtn').disabled = false; $('submitBtn').textContent = '提交订单'; } }
 };
 </script>
 </body>

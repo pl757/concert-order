@@ -46,6 +46,12 @@ button.on{background:#222;color:#fff;border-color:#222}
 <div class="wrap" id="main">
 <h1>📋 订单后台 <span class="live"><i></i><span id="liveText">实时同步中</span></span></h1>
 <p id="who" style="color:#1450b8;font-size:14px"></p>
+<p id="mySub" style="display:none;color:#b45309;font-size:14px"></p>
+<div id="subBox" style="display:none;background:#fffbe6;border:1px solid #f5c542;border-radius:12px;padding:14px;margin:10px 0">
+<h3 style="margin:0 0 8px">💰 月费续费管理（只有总账号能看到）</h3>
+<p style="color:#666;font-size:13px;margin:0 0 10px">分账号按月收费：到期后自动停用，登不进后台，客户用他的链接也下不了单。对方微信转你月费后，你在这里点续费就行。不续费不用手动停，到期日一过系统自动停。</p>
+<div id="subList"></div>
+</div>
 <p style="color:#666">这个页面只给你自己看，别把这个链接和密码发给客户。客户只发首页链接。</p>
 <p class="hint">📌 已按「演唱会名 + 场次时间」统一分类：名字大差不差的归一类（去空格、标点、年份和“演唱会/巡回演唱会”等后缀），同一场次归一类。不同场次、不同演唱会会分开显示。</p>
 <div class="bar">
@@ -138,13 +144,42 @@ async function doLogin(){
 const u = $('user').value.trim();
 const p = $('pw').value;
 const r = await fetch('/api/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username: u, password: p})});
-if (!r.ok) { $('loginErr').textContent = '账号或密码不对，请重试'; return;}
+if (!r.ok) { let msg='账号或密码不对，请重试'; try { const e=await r.json(); if (e.error) msg=e.error; } catch {} $('loginErr').textContent = msg; return;}
 const d = await r.json(); me = d;
 sessionStorage.setItem('adminUser', d.username);
 sessionStorage.setItem('adminPw', p);
 enter();
 }
 window.doLogin = doLogin;
+async function loadSubs(){
+try {
+  const r = await fetch('/api/subscriptions', { headers: headers()});
+  if (!r.ok) return;
+  const list = await r.json();
+  $('subBox').style.display = 'block';
+  $('subList').innerHTML = list.map(s => {
+    const status = s.expired ? '<b style="color:#e60023">已到期 · 已停用</b>' : (s.soon ? '<b style="color:#b45309">剩 ' + s.daysLeft + ' 天，快到期了</b>' : '<b style="color:#15803d">正常 · 剩 ' + s.daysLeft + ' 天</b>');
+    const exp = s.expiresAt ? '到期日 ' + s.expiresAt : '还没设置到期日';
+    return '<div style="border-top:1px solid #eee;padding:10px 0"><b>' + s.displayName + '</b>（' + s.username + '） ' + status + '<br><span style="color:#666;font-size:13px">' + exp + '</span><br>' +
+      '<button onclick="renewSub(\'' + s.username + '\',30)">续费 +30 天</button> ' +
+      '<button onclick="renewSub(\'' + s.username + '\',90)">续费 +90 天</button> ' +
+      '<input type="date" id="exp-' + s.username + '" value="' + (s.expiresAt || '') + '"> ' +
+      '<button onclick="setSub(\'' + s.username + '\')">设到期日</button></div>';
+  }).join('');
+} catch {}
+}
+async function renewSub(username, days){
+const r = await fetch('/api/subscriptions/renew', { method:'POST', headers:{'Content-Type':'application/json', ...headers()}, body: JSON.stringify({ username, days })});
+if (r.ok) { showToast('已续费 ' + days + ' 天'); loadSubs(); } else { const e=await r.json().catch(()=>({})); showToast(e.error || '续费失败'); }
+}
+window.renewSub = renewSub;
+async function setSub(username){
+const v = $('exp-' + username).value;
+if (!v) { showToast('先选一个到期日'); return; }
+const r = await fetch('/api/subscriptions/set', { method:'POST', headers:{'Content-Type':'application/json', ...headers()}, body: JSON.stringify({ username, expiresAt: v })});
+if (r.ok) { showToast('到期日已改成 ' + v); loadSubs(); } else { const e=await r.json().catch(()=>({})); showToast(e.error || '设置失败'); }
+}
+window.setSub = setSub;
 async function enter(){
 $('login').style.display = 'none'; $('main').style.display = 'block';
 try {
@@ -155,6 +190,11 @@ if (me) {
   $('who').textContent = me.role === 'super'
     ? '当前账号：总账号（' + me.displayName + '），能看到全部人的订单'
     : '当前账号：' + me.displayName + '（分账号），只能看到自己的订单';
+  if (me.role === 'agent' && me.expiresAt) {
+    $('mySub').style.display = 'block';
+    $('mySub').textContent = '你的账号到期日 ' + me.expiresAt + '，剩余 ' + me.daysLeft + ' 天' + (me.soon ? '，快到期了，请联系总账号续费' : '');
+  }
+  if (me.role === 'super') loadSubs();
   const af = $('agentFilter');
   if (me.role === 'super' && me.agents) {
     af.style.display = '';
