@@ -187,12 +187,15 @@ return `<div class="card ${o.status==='待处理'? 'new': ''}">
 价位：<b>${o.priceTier} ¥${Number(o.unitPrice).toLocaleString()}/张 × ${o.quantity} 张</b> ｜ 合计：<b>¥${Number(o.total).toLocaleString()}</b><br>
 姓名：<b>${o.name}</b> ｜ 身份证：<b>${maskId(o.idNumber)}</b> ｜ 电话：<b>${o.phone}</b><br>
 座位：${o.seat||'-'} ｜ 备注：${o.note||'-'}<br>
-下单时间：${new Date(o.createdAt).toLocaleString()}
+下单时间：${new Date(o.createdAt).toLocaleString()}<br>
+${o.ticketImage ? '出票截图：已上传 ' + new Date(o.ticketImageAt || o.createdAt).toLocaleString() + '<br><a href="' + o.ticketImage + '" target="_blank"><img src="' + o.ticketImage + '" style="width:100%;max-width:420px;border-radius:10px;margin-top:6px;display:block"></a>' : '出票截图：未上传'}
 </div>
 <div class="btns">
 <button class="red" onclick="copyOne('${o.id}')">一键复制</button>
 <button onclick="copyFull('${o.id}')">复制完整订单</button>
 ${['待处理','已确认','已出票','已取消'].map(s=>`<button class="${o.status===s?'on':''}" onclick="setStatus('${o.id}','${s}')">${s}</button>`).join('')}
+<label style="border:1px solid #ddd;border-radius:999px;padding:8px 12px;cursor:pointer;font-size:13px">📷 上传出票截图<input type="file" accept="image/*" style="display:none" onchange="uploadTicket('${o.id}', this)"></label>
+${o.ticketImage ? `<button onclick="delTicket('${o.id}')" style="color:#e60023">删除截图</button>` : ''}
 <button onclick="delOne('${o.id}')" style="color:#e60023">删除</button>
 </div>
 </div>`;
@@ -238,6 +241,33 @@ window.copyOne = id => { const o=orders.find(x=>x.id===id); copyText(five(o), ev
 window.copyFull = id => { const o=orders.find(x=>x.id===id); copyText(full(o), event.target);};
 window.setStatus = async (id, status) => { await fetch('/api/orders/'+id,{method:'PATCH',headers:{'Content-Type':'application/json',...headers()},body:JSON.stringify({status})}); load();};
 window.delOne = async id => { if(!confirm('确定删除这单吗？')) return; await fetch('/api/orders/'+id,{method:'DELETE',headers:headers()}); load();};
+async function compressImage(file){
+  const bmp = await createImageBitmap(file);
+  const maxSide = 1200;
+  const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  cv.getContext('2d').drawImage(bmp, 0, 0, w, h);
+  let q = 0.82, url = cv.toDataURL('image/jpeg', q);
+  if (url.length > 2400000) { url = cv.toDataURL('image/jpeg', 0.7); }
+  return url;
+}
+window.uploadTicket = async (id, input) => {
+  const file = input.files && input.files[0]; if (!file) return;
+  try {
+    const image = await compressImage(file);
+    const r = await fetch('/api/orders/' + id + '/ticket-image', { method:'POST', headers:{'Content-Type':'application/json', ...headers()}, body: JSON.stringify({ image }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || '上传失败');
+    showToast('出票截图已上传，客户查单能看到 ✓'); load();
+  } catch(e){ alert(e.message); }
+  input.value = '';
+};
+window.delTicket = async id => {
+  if (!confirm('确定删除这张出票截图吗？客户查单就看不到了。')) return;
+  await fetch('/api/orders/' + id + '/ticket-image', { method:'DELETE', headers: headers() });
+  load();
+};
 $('agentFilter').addEventListener('change', render);
 $('q').addEventListener('input', render);
 $('statusFilter').addEventListener('change', render);

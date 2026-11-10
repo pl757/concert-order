@@ -185,7 +185,9 @@ $('lookupBtn').onclick = async () => {
       + '<p>场次：' + o.datetime + '</p>'
       + '<p>价位：' + o.priceTier + ' ' + fmt(o.unitPrice) + '/张 × ' + o.quantity + ' 张，合计 ' + fmt(o.total) + '</p>'
       + '<p>姓名：' + o.name + '　身份证：' + o.idNumberMasked + '　电话：' + o.phoneMasked + '</p>'
-      + '<p>状态：' + (statusTip[o.status] || o.status) + '　下单时间：' + new Date(o.createdAt).toLocaleString() + '</p></div>').join('');
+      + '<p>状态：' + (statusTip[o.status] || o.status) + '　下单时间：' + new Date(o.createdAt).toLocaleString() + '</p>'
+      + (o.ticketImage ? '<p style="margin-top:10px"><b>🎫 出票截图：</b></p><a href="' + o.ticketImage + '" target="_blank"><img src="' + o.ticketImage + '" style="width:100%;border-radius:10px;display:block"></a><p style="color:#666;font-size:13px">点图片可放大查看</p>' : '')
+      + '</div>').join('');
   } catch(e){ $('lookupErr').textContent = e.message; }
   finally { $('lookupBtn').disabled = false; $('lookupBtn').textContent = '查询我的订单'; }
 };
