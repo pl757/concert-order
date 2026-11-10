@@ -24,12 +24,24 @@ input:focus,select:focus,textarea:focus{outline:2px solid #e60023;border-color:#
 .btn:disabled{opacity:.5}.btn.ghost{background:#fff;color:#e60023;border:1px solid #e60023}
 .miss{color:#e60023;font-size:13px}.ok{color:#07a35a;font-size:13px}
 .success{display:none;text-align:center}.success h2{color:#07a35a}
+.tabs{display:flex;gap:8px;margin-bottom:14px}
+.tab{flex:1;padding:11px;border:1px solid #ddd;background:#fff;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;color:#666}
+.tab.on{background:#e60023;color:#fff;border-color:#e60023}
+.lookup-item{border:1px solid #eee;border-radius:12px;padding:14px;margin-top:12px;text-align:left}
+.lookup-item h3{margin:0 0 8px;font-size:16px}
+.lookup-item p{margin:4px 0;font-size:14px;color:#444}
+.st{float:right;font-size:13px;font-weight:700;padding:3px 9px;border-radius:999px}
+.st-待处理{background:#fff7e0;color:#8a6d00}.st-已确认{background:#e6f0ff;color:#1450b8}.st-已出票{background:#e6f7ee;color:#067a3d}.st-已取消{background:#f0f0f0;color:#888}
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>🎤 演唱会下单</h1>
   <p class="sub">填写信息并提交，不需要付费，提交后工作人员会在后台看到你的订单。</p>
+  <div class="tabs">
+    <button type="button" class="tab on" id="tabOrder">📝 下单</button>
+    <button type="button" class="tab" id="tabLookup">🔍 查单</button>
+  </div>
 
   <div class="card" id="formCard">
     <label>演唱会名称 *</label>
@@ -74,10 +86,21 @@ input:focus,select:focus,textarea:focus{outline:2px solid #e60023;border-color:#
     <p id="err" style="color:#e60023"></p>
   </div>
 
+  <div class="card" id="lookupCard" style="display:none">
+    <label>身份证号 *</label>
+    <input id="lookupId" placeholder="输入下单时填的身份证号" inputmode="numeric">
+    <p style="color:#666;font-size:13px;margin:8px 0 0">只查你自己的单：必须身份证号完全一致才显示，后台改成“已确认”或“已出票”后，这里立刻能看到。</p>
+    <button class="btn" id="lookupBtn" type="button">查询我的订单</button>
+    <p id="lookupErr" style="color:#e60023"></p>
+    <div id="lookupResult"></div>
+  </div>
+
   <div class="card success" id="successCard">
     <h2>✅ 提交成功</h2>
     <p>订单号：<b id="orderId"></b></p>
     <p style="color:#666">工作人员已在后台看到你的订单，请保持电话畅通。</p>
+    <p style="color:#666;font-size:14px">想看进度：去「查单」页，输入身份证号就能查到这单是待处理、已确认还是已出票。</p>
+    <button class="btn ghost" id="goLookupBtn" type="button">去查单看进度</button>
     <button class="btn" id="copyOrderBtn" type="button" style="background:#e60023">一键复制这单信息</button>
     <button class="btn ghost" type="button" onclick="location.reload()">再下一单</button>
   </div>
@@ -126,6 +149,38 @@ $('copyOrderBtn').onclick = () => {
   if (!lastOrder) return;
   const t = '订单号：' + lastOrder.id + '\n' + fiveLines();
   copyText(t, null); $('copyOrderBtn').textContent = '已复制 ✓';
+};
+
+function showTab(which){
+  const order = which === 'order';
+  $('formCard').style.display = order ? 'block' : 'none';
+  $('lookupCard').style.display = order ? 'none' : 'block';
+  $('successCard').style.display = 'none';
+  $('tabOrder').classList.toggle('on', order);
+  $('tabLookup').classList.toggle('on', !order);
+  window.scrollTo(0,0);
+}
+$('tabOrder').onclick = () => showTab('order');
+$('tabLookup').onclick = () => showTab('lookup');
+$('goLookupBtn').onclick = () => { showTab('lookup'); if (lastOrder) $('lookupId').value = document.getElementById('idNumber').value; };
+const statusTip = { '待处理': '已收到，等待确认', '已确认': '已确认，等待出票', '已出票': '已出票', '已取消': '已取消' };
+$('lookupBtn').onclick = async () => {
+  const idNumber = $('lookupId').value.trim();
+  $('lookupErr').textContent = ''; $('lookupResult').innerHTML = '';
+  if (!idNumber) { $('lookupErr').textContent = '请先输入身份证号'; return; }
+  $('lookupBtn').disabled = true; $('lookupBtn').textContent = '查询中…';
+  try {
+    const r = await fetch('/api/orders/lookup', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ idNumber }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || '查询失败');
+    $('lookupResult').innerHTML = d.map(o => '<div class="lookup-item"><h3>' + o.concert + '<span class="st st-' + o.status + '">' + o.status + '</span></h3>'
+      + '<p>订单号：' + o.id + '</p>'
+      + '<p>场次：' + o.datetime + '</p>'
+      + '<p>价位：' + o.priceTier + ' ' + fmt(o.unitPrice) + '/张 × ' + o.quantity + ' 张，合计 ' + fmt(o.total) + '</p>'
+      + '<p>姓名：' + o.name + '　身份证：' + o.idNumberMasked + '　电话：' + o.phoneMasked + '</p>'
+      + '<p>状态：' + (statusTip[o.status] || o.status) + '　下单时间：' + new Date(o.createdAt).toLocaleString() + '</p></div>').join('');
+  } catch(e){ $('lookupErr').textContent = e.message; }
+  finally { $('lookupBtn').disabled = false; $('lookupBtn').textContent = '查询我的订单'; }
 };
 
 $('submitBtn').onclick = async () => {
