@@ -39,20 +39,59 @@ function parseAgents(raw) {
   }
   return list;
 }
+// ---- 月费订阅：分账号按月收费，到期自动停用 ----
+// 到期日存在 data/subscriptions.json，格式 { "pl001": "2026-12-10", ... }
+// 没续费记录的账号视为已到期；总账号 admin 永不过期。
+// 续费只在后台由总账号操作（点“续费 +30 天”），客户/分账号自己续不了。
+// 校验在三个地方：分账号登录、客户经 ?agent= 下单、后台鉴权（过期后连已登录的会话也进不去）。
+const SUBS_FILE = path.join(DATA_DIR, 'subscriptions.json');
+function loadSubs() {
+  try { return JSON.parse(fs.readFileSync(SUBS_FILE, 'utf8') || '{}'); } catch { return {}; }
+}
+function saveSubs(s) {
+  const tmp = SUBS_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(s, null, 2), 'utf8');
+  fs.renameSync(tmp, SUBS_FILE);
+}
+function expiryEnd(dateStr) {
+  const m = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59, 999);
+}
+function subInfo(username) {
+  const subs = loadSubs();
+  const expiresAt = subs[username] || null;
+  if (!expiresAt) return { username, expiresAt: null, daysLeft: null, expired: true, soon: false };
+  const end = expiryEnd(expiresAt);
+  if (!end) return { username, expiresAt, daysLeft: null, expired: true, soon: false };
+  // 按日期算剩余天数：今天续 30 天，到期日就是 30 天后那天，显示“剩 30 天”，当天到期显示 0 天
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const expDay = new Date(end); expDay.setHours(0, 0, 0, 0);
+  const daysLeft = Math.round((expDay - today) / 86400000);
+  const expired = daysLeft < 0;
+  return { username, expiresAt, daysLeft, expired, soon: !expired && daysLeft <= 3 };
+}
+function subList() {
+  return AGENTS.map(a => ({ username: a.username, displayName: a.displayName, ...subInfo(a.username) }));
+}
 const AGENTS = parseAgents(process.env.AGENT_ACCOUNTS);
 function agentByUsername(u) { return AGENTS.find(a => a.username === String(u || '').trim()); }
 function agentByPassword(pw) { return AGENTS.find(a => a.password === pw); }
-function publicAgents() { return AGENTS.map(a => ({ username: a.username, displayName: a.displayName })); }
+function publicAgents() { return AGENTS.map(a => { const s = subInfo(a.username); return { username: a.username, displayName: a.displayName, expiresAt: s.expiresAt, daysLeft: s.daysLeft, expired: s.expired }; }); }
 function authByCredentials(username, pw) {
   if (!pw) return null;
   if (username) {
     if (username === 'admin' || username === '总账号') return pw === ADMIN_PASSWORD ? { role: 'super', username: 'admin', displayName: '总账号' } : null;
     const a = agentByUsername(username);
-    return a && a.password === pw ? { role: 'agent', username: a.username, displayName: a.displayName } : null;
+    if (!a || a.password !== pw) return null;
+    if (subInfo(a.username).expired) return { role: 'expired', username: a.username, displayName: a.displayName };
+    return { role: 'agent', username: a.username, displayName: a.displayName };
   }
   if (pw === ADMIN_PASSWORD) return { role: 'super', username: 'admin', displayName: '总账号' };
   const a = agentByPassword(pw);
-  return a ? { role: 'agent', username: a.username, displayName: a.displayName } : null;
+  if (!a) return null;
+  if (subInfo(a.username).expired) return { role: 'expired', username: a.username, displayName: a.displayName };
+  return { role: 'agent', username: a.username, displayName: a.displayName };
 }
 function visibleOrders(list, auth) {
   if (!auth) return [];
@@ -104,7 +143,9 @@ function checkAdmin(req) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const username = req.headers['x-admin-username'] || url.searchParams.get('username') || '';
   const pw = req.headers['x-admin-password'] || url.searchParams.get('password') || '';
-  return authByCredentials(username, pw);
+  const auth = authByCredentials(username, pw);
+  if (!auth || auth.role === 'expired') return null; // 到期账号：已登录的会话也立即失效
+  return auth;
 }
 // 简单防刷：同一 IP 1 分钟最多下 20 单
 const hits = new Map();
@@ -212,7 +253,9 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       const auth = authByCredentials(b.username || '', b.password || '');
       if (!auth) return sendJson(res, 401, { ok: false, error: '账号或密码不对' });
-      return sendJson(res, 200, { ok: true, role: auth.role, username: auth.username, displayName: auth.displayName, agents: auth.role === 'super' ? publicAgents() : [] });
+      if (auth.role === 'expired') return sendJson(res, 403, { ok: false, error: '账号已到期，请联系总账号续费', expired: true, ...subInfo(auth.username) });
+      if (auth.role === 'super') return sendJson(res, 200, { ok: true, role: auth.role, username: auth.username, displayName: auth.displayName, agents: publicAgents(), subscriptions: subList() });
+      return sendJson(res, 200, { ok: true, role: auth.role, username: auth.username, displayName: auth.displayName, agents: [], ...subInfo(auth.username) });
     }
     catch (e) { return sendJson(res, 400, { error: e.message }); }
   }
@@ -221,7 +264,49 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/admin/me' && req.method === 'GET') {
     const auth = checkAdmin(req);
     if (!auth) return sendJson(res, 401, { error: '需要后台登录' });
-    return sendJson(res, 200, { role: auth.role, username: auth.username, displayName: auth.displayName, agents: auth.role === 'super' ? publicAgents() : [] });
+    if (auth.role === 'super') return sendJson(res, 200, { role: auth.role, username: auth.username, displayName: auth.displayName, agents: publicAgents(), subscriptions: subList() });
+    return sendJson(res, 200, { role: auth.role, username: auth.username, displayName: auth.displayName, agents: [], ...subInfo(auth.username) });
+  }
+
+  // 订阅续费管理（只有总账号能操作）：查看到期日 / 续费 / 指定到期日
+  if (pathname === '/api/subscriptions' && req.method === 'GET') {
+    const auth = checkAdmin(req);
+    if (!auth || auth.role !== 'super') return sendJson(res, 401, { error: '需要总账号登录' });
+    return sendJson(res, 200, subList());
+  }
+  if (pathname === '/api/subscriptions/renew' && req.method === 'POST') {
+    const auth = checkAdmin(req);
+    if (!auth || auth.role !== 'super') return sendJson(res, 401, { error: '需要总账号登录' });
+    try {
+      const b = await readBody(req);
+      const username = String(b.username || '').trim();
+      const days = Number(b.days || 30);
+      if (!agentByUsername(username)) return sendJson(res, 404, { error: '没有这个账号' });
+      if (!Number.isFinite(days) || days < 1 || days > 365) return sendJson(res, 400, { error: '续费天数填 1-365' });
+      const subs = loadSubs();
+      const cur = expiryEnd(subs[username]);
+      const base = (cur && cur.getTime() > Date.now()) ? cur : new Date();
+      const next = new Date(base.getTime() + days * 86400000);
+      const y = next.getFullYear(), m = String(next.getMonth() + 1).padStart(2, '0'), d = String(next.getDate()).padStart(2, '0');
+      subs[username] = `${y}-${m}-${d}`;
+      saveSubs(subs);
+      return sendJson(res, 200, subInfo(username));
+    } catch (e) { return sendJson(res, 400, { error: e.message }); }
+  }
+  if (pathname === '/api/subscriptions/set' && req.method === 'POST') {
+    const auth = checkAdmin(req);
+    if (!auth || auth.role !== 'super') return sendJson(res, 401, { error: '需要总账号登录' });
+    try {
+      const b = await readBody(req);
+      const username = String(b.username || '').trim();
+      const expiresAt = String(b.expiresAt || '').trim();
+      if (!agentByUsername(username)) return sendJson(res, 404, { error: '没有这个账号' });
+      if (!expiryEnd(expiresAt)) return sendJson(res, 400, { error: '到期日格式不对，用 2026-12-10 这种' });
+      const subs = loadSubs();
+      subs[username] = expiresAt;
+      saveSubs(subs);
+      return sendJson(res, 200, subInfo(username));
+    } catch (e) { return sendJson(res, 400, { error: e.message }); }
   }
 
   // 前台用的分账号公开名单（只有账号名和显示名，没有密码）
@@ -300,6 +385,7 @@ const server = http.createServer(async (req, res) => {
         // 归属：body.agent 或 ?agent=，必须是已配置的分账号，否则归“未分配”（只有总账号能看到）
         const agentParam = String(b.agent || url.searchParams.get('agent') || '').trim();
         const agentObj = agentParam ? agentByUsername(agentParam) : null;
+        if (agentObj && subInfo(agentObj.username).expired) return sendJson(res, 403, { error: '该对接人账号已到期，无法下单，请联系总账号续费' });
         const order = {
           id: 'YC' + Date.now().toString().slice(-8) + Math.floor(Math.random() * 90 + 10),
           agent: agentObj ? agentObj.username : null,
