@@ -38,6 +38,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid #e60023;border-color:#
 <div class="wrap">
   <h1>🎤 演唱会下单</h1>
   <p class="sub">填写信息并提交，不需要付费，提交后工作人员会在后台看到你的订单。</p>
+  <p id="agentBanner" class="sub" style="display:none;color:#1450b8"></p>
   <div class="tabs">
     <button type="button" class="tab on" id="tabOrder">📝 下单</button>
     <button type="button" class="tab" id="tabLookup">🔍 查单</button>
@@ -109,6 +110,12 @@ input:focus,select:focus,textarea:focus{outline:2px solid #e60023;border-color:#
 <script>
 const $ = id => document.getElementById(id);
 let lastOrder = null;
+const agentParam = new URLSearchParams(location.search).get('agent') || '';
+// 显示归属人（只显示名字，不显示账号密码）
+fetch('/api/agents').then(r => r.json()).then(list => {
+  const a = list.find(x => x.username === agentParam);
+  if (a) { const el = $('agentBanner'); el.style.display = 'block'; el.textContent = '本次下单对接人：' + a.displayName; }
+}).catch(() => {});
 
 document.querySelectorAll('#tiers .chip').forEach(c => c.onclick = () => {
   document.querySelectorAll('#tiers .chip').forEach(x => x.classList.remove('on'));
@@ -191,6 +198,7 @@ $('submitBtn').onclick = async () => {
     quantity: Number($('quantity').value), seat: $('seat').value.trim(),
     name: $('name').value.trim(), idNumber: $('idNumber').value.trim(),
     phone: $('phone').value.trim(), note: $('note').value.trim(),
+    agent: agentParam,
   };
   if (!body.concert || !body.datetime || !body.priceTier || !body.name || !body.idNumber || !body.phone) {
     $('err').textContent = '请填齐带 * 的信息'; return;
