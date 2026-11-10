@@ -35,7 +35,8 @@ button.on{background:#222;color:#fff;border-color:#222}
 
 <div id="login">
 <h2 style="margin:0">🔒 后台登录</h2>
-<p style="color:#666;font-size:14px">请输入后台密码（服务器上 ADMIN_PASSWORD 设置的那个）。</p>
+<p style="color:#666;font-size:14px">总账号用户名填 <b>admin</b>，密码是服务器上 ADMIN_PASSWORD 那个；分账号填自己的账号名和密码。</p>
+<input id="user" type="text" placeholder="账号（总账号填 admin）" onkeydown="if(event.key==='Enter')doLogin()">
 <input id="pw" type="password" placeholder="后台密码" onkeydown="if(event.key==='Enter')doLogin()">
 <button class="red" style="width:100%;padding:12px" onclick="doLogin()">进入后台</button>
 <p id="loginErr" style="color:#e60023"></p>
@@ -44,6 +45,7 @@ button.on{background:#222;color:#fff;border-color:#222}
 
 <div class="wrap" id="main">
 <h1>📋 订单后台 <span class="live"><i></i><span id="liveText">实时同步中</span></span></h1>
+<p id="who" style="color:#1450b8;font-size:14px"></p>
 <p style="color:#666">这个页面只给你自己看，别把这个链接和密码发给客户。客户只发首页链接。</p>
 <p class="hint">📌 已按「演唱会名 + 场次时间」统一分类：名字大差不差的归一类（去空格、标点、年份和“演唱会/巡回演唱会”等后缀），同一场次归一类。不同场次、不同演唱会会分开显示。</p>
 <div class="bar">
@@ -56,12 +58,13 @@ button.on{background:#222;color:#fff;border-color:#222}
 <div class="bar">
 <select id="groupFilter" style="flex:1;min-width:200px"><option value="">全部分组</option></select>
 <input id="q" placeholder="搜索演唱会 / 姓名 / 电话" style="flex:1;min-width:180px">
+<select id="agentFilter" style="display:none"><option value="">全部账号</option></select>
 <select id="statusFilter">
 <option value="">全部状态</option><option>待处理</option><option>已确认</option><option>已出票</option><option>已取消</option>
 </select>
 <button id="refreshBtn">刷新</button>
 <button id="exportBtn">导出 CSV 备份</button>
-<button onclick="sessionStorage.removeItem('adminPw');location.reload()">退出登录</button>
+<button onclick="sessionStorage.removeItem('adminPw');sessionStorage.removeItem('adminUser');location.reload()">退出登录</button>
 </div>
 <div id="list"></div>
 <p id="empty" style="color:#888;text-align:center;margin-top:30px">暂无订单，等客户提交后这里会自动出现。</p>
@@ -73,7 +76,9 @@ let viewMode = 'group';
 const collapsed = new Set();
 const $ = id => document.getElementById(id);
 const pw = () => sessionStorage.getItem('adminPw') || '';
-const headers = () => ({ 'x-admin-password': pw()});
+const adminUser = () => sessionStorage.getItem('adminUser') || '';
+const headers = () => ({ 'x-admin-username': adminUser(), 'x-admin-password': pw()});
+let me = null;
 function maskId(s){ s=String(s||''); return s.length>10? s.slice(0,6)+'********'+s.slice(-4): s;}
 // 和 server.js 同一套归一化规则，老订单没有 groupKey 也能分组
 function normalizeConcert(name){
@@ -130,21 +135,38 @@ if (btn){ const old=btn.textContent; btn.textContent='已复制 ✓'; setTimeout
 function showToast(t){ const el=$('toast'); el.textContent=t; el.style.display='block'; setTimeout(()=>el.style.display='none',3000);}
 
 async function doLogin(){
+const u = $('user').value.trim();
 const p = $('pw').value;
-const r = await fetch('/api/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ password: p})});
-if (!r.ok) { $('loginErr').textContent = '密码不对，请重试'; return;}
+const r = await fetch('/api/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username: u, password: p})});
+if (!r.ok) { $('loginErr').textContent = '账号或密码不对，请重试'; return;}
+const d = await r.json(); me = d;
+sessionStorage.setItem('adminUser', d.username);
 sessionStorage.setItem('adminPw', p);
 enter();
 }
 window.doLogin = doLogin;
-function enter(){
+async function enter(){
 $('login').style.display = 'none'; $('main').style.display = 'block';
+try {
+  const r = await fetch('/api/admin/me', { headers: headers()});
+  if (r.ok) me = await r.json();
+} catch {}
+if (me) {
+  $('who').textContent = me.role === 'super'
+    ? '当前账号：总账号（' + me.displayName + '），能看到全部人的订单'
+    : '当前账号：' + me.displayName + '（分账号），只能看到自己的订单';
+  const af = $('agentFilter');
+  if (me.role === 'super' && me.agents) {
+    af.style.display = '';
+    af.innerHTML = '<option value="">全部账号</option>' + me.agents.map(a => '<option value="' + a.username + '">' + a.displayName + '</option>').join('');
+  }
+}
 startSSE(); load();
 }
 async function load(){
 try {
 const r = await fetch('/api/orders', { headers: headers()});
-if (r.status === 401) { sessionStorage.removeItem('adminPw'); location.reload(); return;}
+if (r.status === 401) { sessionStorage.removeItem('adminPw'); sessionStorage.removeItem('adminUser'); location.reload(); return;}
 orders = await r.json();
 const isNew = orders.some(o =>!knownIds.has(o.id));
 if (isNew && knownIds.size) showToast('🔔 来了新订单！');
@@ -153,14 +175,14 @@ render();
 } catch { $('liveText').textContent = '连接失败，正在重试…';}
 }
 function filtered(){
-const q = $('q').value.trim(), f = $('statusFilter').value;
-return orders.filter(o => (!f || o.status===f) && (!q || (o.concert+o.name+o.phone+o.id).includes(q)));
+const q = $('q').value.trim(), f = $('statusFilter').value, af = $('agentFilter').value;
+return orders.filter(o => (!f || o.status===f) && (!af || o.agent===af) && (!q || (o.concert+o.name+o.phone+o.id).includes(q)));
 }
 function orderCard(o){
 return `<div class="card ${o.status==='待处理'? 'new': ''}">
 <h3>${o.concert} ${o.status==='待处理'? '<span class="badge">新订单</span>': ''}</h3>
 <div class="meta">
-订单号：<b>${o.id}</b> ｜ 状态：<b>${o.status}</b><br>
+订单号：<b>${o.id}</b> ｜ 状态：<b>${o.status}</b> ｜ 归属：<b>${o.agentName || o.agent || '未分配'}</b><br>
 场次：<b>${o.datetime}</b><br>
 价位：<b>${o.priceTier} ¥${Number(o.unitPrice).toLocaleString()}/张 × ${o.quantity} 张</b> ｜ 合计：<b>¥${Number(o.total).toLocaleString()}</b><br>
 姓名：<b>${o.name}</b> ｜ 身份证：<b>${maskId(o.idNumber)}</b> ｜ 电话：<b>${o.phone}</b><br>
@@ -216,6 +238,7 @@ window.copyOne = id => { const o=orders.find(x=>x.id===id); copyText(five(o), ev
 window.copyFull = id => { const o=orders.find(x=>x.id===id); copyText(full(o), event.target);};
 window.setStatus = async (id, status) => { await fetch('/api/orders/'+id,{method:'PATCH',headers:{'Content-Type':'application/json',...headers()},body:JSON.stringify({status})}); load();};
 window.delOne = async id => { if(!confirm('确定删除这单吗？')) return; await fetch('/api/orders/'+id,{method:'DELETE',headers:headers()}); load();};
+$('agentFilter').addEventListener('change', render);
 $('q').addEventListener('input', render);
 $('statusFilter').addEventListener('change', render);
 $('groupFilter').addEventListener('change', render);
@@ -224,18 +247,18 @@ $('viewListBtn').onclick = () => { viewMode='list'; $('viewListBtn').classList.a
 $('refreshBtn').onclick = () => load();
 $('exportBtn').onclick = () => {
 const a = document.createElement('a');
-a.href = '/api/orders/export?password=' + encodeURIComponent(pw());
+a.href = '/api/orders/export?username=' + encodeURIComponent(adminUser()) + '&password=' + encodeURIComponent(pw());
 a.download = 'orders.csv'; a.click();
 };
 function startSSE(){
 try {
-const es = new EventSource('/api/stream?password=' + encodeURIComponent(pw()));
+const es = new EventSource('/api/stream?username=' + encodeURIComponent(adminUser()) + '&password=' + encodeURIComponent(pw()));
 es.onmessage = () => load();
 es.onerror = () => { $('liveText').textContent = '实时连接断开，自动轮询中…';};
 } catch {}
 }
 setInterval(() => { if (pw()) load();}, 3000);
-if (pw()) enter();
+if (pw()) { $('user').value = adminUser(); enter(); }
 </script>
 </body>
 </html>
