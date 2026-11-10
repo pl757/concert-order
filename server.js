@@ -92,7 +92,7 @@ function sendJson(res, code, obj) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let s = '';
-    req.on('data', c => { s += c; if (s.length > 1e6) req.destroy(); });
+    req.on('data', c => { s += c; if (s.length > 5e6) req.destroy(); });
     req.on('end', () => { try { resolve(s ? JSON.parse(s) : {}); } catch { reject(new Error('JSON 格式不对')); } });
     req.on('error', reject);
   });
@@ -244,6 +244,7 @@ const server = http.createServer(async (req, res) => {
         id: o.id, concert: o.concert, datetime: o.datetime,
         priceTier: o.priceTier, unitPrice: o.unitPrice, quantity: o.quantity, total: o.total,
         seat: o.seat, name: o.name, status: o.status, createdAt: o.createdAt,
+        ticketImage: o.ticketImage || null, ticketImageAt: o.ticketImageAt || null,
         idNumberMasked: maskId(o.idNumber), phoneMasked: maskPhone(o.phone),
       }));
       return sendJson(res, 200, out);
@@ -324,6 +325,37 @@ const server = http.createServer(async (req, res) => {
         broadcast();
         return sendJson(res, 200, order);
       } catch (e) { return sendJson(res, 400, { error: e.message }); }
+    }
+    return sendJson(res, 405, { error: '方法不支持' });
+  }
+
+  // 出票截图：后台上传 / 删除（只有能看到这单的人才能操作，总账号和归属分账号）
+  // 图片以前台压缩后的 data:image/jpeg;base64,... 形式传来，存在 orders.json 里，随订单一起保存/备份
+  // 限制约 2.5MB（data URL 长度），前台会先压到最长边 1200px、JPEG 0.82；太大请换张小图或裁一下
+  const tm = pathname.match(/^\/api\/orders\/([\w-]+)\/ticket-image$/);
+  if (tm) {
+    const auth = checkAdmin(req);
+    if (!auth) return sendJson(res, 401, { error: '需要后台密码' });
+    const id = tm[1];
+    const list = loadOrders();
+    const idx = list.findIndex(o => o.id === id);
+    if (idx === -1 || !canSeeOrder(list[idx], auth)) return sendJson(res, 404, { error: '订单不存在' });
+    if (req.method === 'POST') {
+      try {
+        const b = await readBody(req);
+        const image = String(b.image || '').trim();
+        if (!/^data:image\/(jpeg|png|webp|gif);base64,/.test(image)) return sendJson(res, 400, { error: '图片格式不对，请传 JPG/PNG 图片' });
+        if (image.length > 2500000) return sendJson(res, 400, { error: '图片太大（超过约 2MB），请换张小图或裁一下再传' });
+        list[idx].ticketImage = image;
+        list[idx].ticketImageAt = new Date().toISOString();
+        saveOrders(list); broadcast();
+        return sendJson(res, 200, { ok: true, id });
+      } catch (e) { return sendJson(res, 400, { error: e.message }); }
+    }
+    if (req.method === 'DELETE') {
+      delete list[idx].ticketImage; delete list[idx].ticketImageAt;
+      saveOrders(list); broadcast();
+      return sendJson(res, 200, { ok: true });
     }
     return sendJson(res, 405, { error: '方法不支持' });
   }
