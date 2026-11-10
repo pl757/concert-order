@@ -56,11 +56,28 @@ function checkAdmin(req) {
 }
 // 简单防刷：同一 IP 1 分钟最多下 20 单
 const hits = new Map();
+const lookupHits = new Map();
 function rateLimited(ip) {
   const now = Date.now();
   const arr = (hits.get(ip) || []).filter(t => now - t < 60 * 1000);
   arr.push(now); hits.set(ip, arr);
   return arr.length > 20;
+}
+function maskId(v) {
+  const t = String(v || '').trim();
+  if (t.length <= 8) return '****';
+  return t.slice(0, 4) + '********' + t.slice(-4);
+}
+function maskPhone(v) {
+  const t = String(v || '').trim();
+  if (t.length !== 11) return '****';
+  return t.slice(0, 3) + '****' + t.slice(-4);
+}
+function lookupRateLimited(ip) {
+  const now = Date.now();
+  const arr = (lookupHits.get(ip) || []).filter(t => now - t < 60 * 1000);
+  arr.push(now); lookupHits.set(ip, arr);
+  return arr.length > 10;
 }
 function csvEscape(v) {
   const s = String(v ?? '');
@@ -141,6 +158,27 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/admin/login' && req.method === 'POST') {
     try { const b = await readBody(req); return sendJson(res, b.password === ADMIN_PASSWORD ? 200 : 401, { ok: b.password === ADMIN_PASSWORD }); }
     catch (e) { return sendJson(res, 400, { error: e.message }); }
+  }
+
+  // 客户查单（不用后台密码）：凭下单时填的身份证号查自己的订单
+  // 必须身份证号完全一致才返回，只返回该身份证号的订单，且身份证/电话脱敏显示
+  // 后台把状态改成 已确认 / 已出票 后，客户在这里立刻能看到
+  if (pathname === '/api/orders/lookup' && req.method === 'POST') {
+    if (lookupRateLimited(ip)) return sendJson(res, 429, { error: '查询太频繁，稍后再试' });
+    try {
+      const b = await readBody(req);
+      const idNumber = String(b.idNumber || '').trim();
+      if (!/^(\d{15}|\d{17}[\dXx])$/.test(idNumber)) return sendJson(res, 400, { error: '身份证号格式不对' });
+      const list = loadOrders().filter(o => String(o.idNumber || '').trim().toUpperCase() === idNumber.toUpperCase());
+      if (!list.length) return sendJson(res, 404, { error: '没查到该身份证号的订单，请核对后重试' });
+      const out = list.map(o => ({
+        id: o.id, concert: o.concert, datetime: o.datetime,
+        priceTier: o.priceTier, unitPrice: o.unitPrice, quantity: o.quantity, total: o.total,
+        seat: o.seat, name: o.name, status: o.status, createdAt: o.createdAt,
+        idNumberMasked: maskId(o.idNumber), phoneMasked: maskPhone(o.phone),
+      }));
+      return sendJson(res, 200, out);
+    } catch (e) { return sendJson(res, 400, { error: e.message }); }
   }
 
   // 分组汇总（后台，要密码）：按归一化演唱会名 + 场次时间分组

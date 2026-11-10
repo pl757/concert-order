@@ -1,3 +1,8 @@
+# Render 一键部署配置（Blueprint）— 免费试用版
+# 不用绑卡，不用付费。先跑起来测试用。
+# 注意：免费版 15 分钟没人访问会休眠，唤醒要等约 50 秒；
+# 没有持久磁盘，重启 / 重新部署后订单会丢，只能先测试，不要正式接单。
+# 正式用请把 plan 改回 starter，并加回 disk，再绑卡部署。
 services:
   - type: web
     name: concert-order

@@ -1,7 +1,16 @@
-# 演唱会下单工作台 — Render 版
+# 演唱会下单工作台 — Render 版（免费试用版）
+
+> **当前是免费试用版，不用绑卡。** 免费版 15 分钟没人访问会休眠，唤醒要等约 50 秒；没有持久磁盘，重启 / 重新部署后订单会丢，只能先测试，不要正式接单。测试完记得在后台点「导出 CSV 备份」。正式用请把 `render.yaml` 里的 `plan` 改回 `starter` 并加回磁盘，再绑卡部署。
 
 客户在前台填单提交，你在后台实时看到，不需要付费。
 价位只有 **内场 / 看台**，没有场馆字段。
+
+## 客户查单（新增）
+
+- 前台顶部有「下单 / 查单」两个入口，客户点「查单」，输入下单时填的**身份证号**就能查到自己的订单
+- 你在后台把状态改成 **已确认 / 已出票** 后，客户在这里立刻能看到，不用问你
+- 只查自己的单：身份证号必须完全一致才显示；查单结果里身份证、电话都是脱敏显示（例如 `1101********1234`、`138****8000`），完整号码不会返回
+- 查错了会提示「没查到该身份证号的订单」；同一 IP 1 分钟最多查 10 次，防别人乱试
 
 ## 订单统一分类（新增）
 
@@ -13,7 +22,7 @@
 ## 正式版已包含
 
 - **后台有密码**：打开 `/admin.html` 要输密码，密码在 Render 的环境变量 `ADMIN_PASSWORD` 里设置，部署时必须填，默认 `change-me-123456` 部署前必须改掉
-- **订单不会丢**：订单存在持久磁盘 `/data/concert-order/orders.json`，重启、重新部署也不会丢
+- **订单不会丢（正式 Starter 版才有）**：免费试用版没有持久磁盘，订单只存在 `./data/orders.json`，重启、重新部署会丢单，测试完及时导出备份；正式版订单存在持久磁盘 `/data/concert-order/orders.json`，重启、重新部署也不会丢
 - **可以导出备份**：后台点「导出 CSV 备份」
 - **防刷**：同一 IP 1 分钟最多下 20 单
 - **实时同步**：后台用 SSE + 每 3 秒轮询兜底，新订单自动出现
@@ -38,10 +47,11 @@
 ### 方法二：手动建 Web Service
 1. GitHub 同上
 2. Render → New → **Web Service** → 选仓库
-3. 设置：Environment `Node`，Build Command 留空，Start Command `node server.js`，Plan 选 **Starter（约 $7/月）**，不要选 Free
-4. 环境变量：`ADMIN_PASSWORD` = 你的强密码，`DATA_DIR` = `/data/concert-order`
-5. 左侧 Disks → Add Disk：Name `concert-data`，Mount Path `/data`，Size `1 GB`，保存后重新部署一次
-6. 部署好拿到地址，例如 `https://concert-order-xxxx.onrender.com`
+3. 设置：Environment `Node`，Build Command 留空，Start Command `node server.js`，Plan 选 **Free**（试用，不用绑卡）
+4. 环境变量：`ADMIN_PASSWORD` = 你的强密码
+5. 部署好拿到地址，例如 `https://concert-order-xxxx.onrender.com`
+
+> 正式用再改回 Starter：Plan 选 **Starter（约 $7/月）**，环境变量再加 `DATA_DIR` = `/data/concert-order`，左侧 Disks → Add Disk：Name `concert-data`，Mount Path `/data`，Size `1 GB`，保存后重新部署一次，并绑卡。
 
 ## 部署后测试
 
