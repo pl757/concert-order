@@ -15,6 +15,51 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'orders.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-me-123456';
+// ---- 多账号分人隔离（老板看全部，下边人只看自己的）----
+// 总账号：ADMIN_PASSWORD，用户名 admin，登录后能看到全部订单。
+// 分账号：环境变量 AGENT_ACCOUNTS，格式（不要写进 GitHub，写在 Render 环境变量里）：
+//   zhangsan:密码123:张三,lisi:密码456:李四
+// 也可以写 JSON：[{"username":"zhangsan","password":"密码123","displayName":"张三"}]
+// 前台链接带 ?agent=zhangsan，下单就归张三；不带 agent 的单只归总账号，没人能从分账号看到。
+function parseAgents(raw) {
+  const list = [];
+  if (!raw) return list;
+  const t = String(raw).trim();
+  if (t.startsWith('[')) {
+    try {
+      const arr = JSON.parse(t);
+      for (const a of arr) if (a && a.username && a.password) list.push({ username: String(a.username).trim(), password: String(a.password), displayName: String(a.displayName || a.username).trim() });
+      return list;
+    } catch {}
+  }
+  for (const part of t.split(',')) {
+    const p = part.trim(); if (!p) continue;
+    const [username, password, ...rest] = p.split(':');
+    if (username && password) list.push({ username: username.trim(), password, displayName: (rest.join(':') || username).trim() });
+  }
+  return list;
+}
+const AGENTS = parseAgents(process.env.AGENT_ACCOUNTS);
+function agentByUsername(u) { return AGENTS.find(a => a.username === String(u || '').trim()); }
+function agentByPassword(pw) { return AGENTS.find(a => a.password === pw); }
+function publicAgents() { return AGENTS.map(a => ({ username: a.username, displayName: a.displayName })); }
+function authByCredentials(username, pw) {
+  if (!pw) return null;
+  if (username) {
+    if (username === 'admin' || username === '总账号') return pw === ADMIN_PASSWORD ? { role: 'super', username: 'admin', displayName: '总账号' } : null;
+    const a = agentByUsername(username);
+    return a && a.password === pw ? { role: 'agent', username: a.username, displayName: a.displayName } : null;
+  }
+  if (pw === ADMIN_PASSWORD) return { role: 'super', username: 'admin', displayName: '总账号' };
+  const a = agentByPassword(pw);
+  return a ? { role: 'agent', username: a.username, displayName: a.displayName } : null;
+}
+function visibleOrders(list, auth) {
+  if (!auth) return [];
+  if (auth.role === 'super') return list;
+  return list.filter(o => o.agent === auth.username);
+}
+function canSeeOrder(o, auth) { return !!auth && (auth.role === 'super' || o.agent === auth.username); }
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -30,10 +75,15 @@ function saveOrders(list) {
   fs.renameSync(tmp, DATA_FILE); // 原子写，断电也不容易坏文件
 }
 
-const clients = new Set();
+const clients = new Map(); // res -> auth（每个后台连接只推它能看的单数）
 function broadcast() {
-  const data = `data: ${JSON.stringify({ type: 'orders', count: loadOrders().length, at: new Date().toISOString() })}\n\n`;
-  for (const res of clients) { try { res.write(data); } catch {} }
+  const list = loadOrders();
+  for (const [res, auth] of clients) {
+    try {
+      const data = `data: ${JSON.stringify({ type: 'orders', count: visibleOrders(list, auth).length, at: new Date().toISOString() })}\n\n`;
+      res.write(data);
+    } catch {}
+  }
 }
 function sendJson(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -47,12 +97,14 @@ function readBody(req) {
     req.on('error', reject);
   });
 }
-// 后台密码：请求头 x-admin-password，或 ?password=
-// 前台下单 POST 不用密码；看单 / 改状态 / 删除 / 导出都要密码
+// 后台鉴权：请求头 x-admin-username + x-admin-password，或 ?username=&password=
+// 兼容老版：只传密码时，先对总账号，再对分账号密码
+// 前台下单 POST 不用密码；看单 / 改状态 / 删除 / 导出都要密码，返回的是身份对象（null = 未登录）
 function checkAdmin(req) {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  const username = req.headers['x-admin-username'] || url.searchParams.get('username') || '';
   const pw = req.headers['x-admin-password'] || url.searchParams.get('password') || '';
-  return pw === ADMIN_PASSWORD;
+  return authByCredentials(username, pw);
 }
 // 简单防刷：同一 IP 1 分钟最多下 20 单
 const hits = new Map();
@@ -154,10 +206,27 @@ const server = http.createServer(async (req, res) => {
   // 健康检查（云平台 / Nginx 用）
   if (pathname === '/health') return sendJson(res, 200, { ok: true, orders: loadOrders().length });
 
-  // 后台登录校验
+  // 后台登录校验：body { username, password }，username 为空或 admin = 总账号
   if (pathname === '/api/admin/login' && req.method === 'POST') {
-    try { const b = await readBody(req); return sendJson(res, b.password === ADMIN_PASSWORD ? 200 : 401, { ok: b.password === ADMIN_PASSWORD }); }
+    try {
+      const b = await readBody(req);
+      const auth = authByCredentials(b.username || '', b.password || '');
+      if (!auth) return sendJson(res, 401, { ok: false, error: '账号或密码不对' });
+      return sendJson(res, 200, { ok: true, role: auth.role, username: auth.username, displayName: auth.displayName, agents: auth.role === 'super' ? publicAgents() : [] });
+    }
     catch (e) { return sendJson(res, 400, { error: e.message }); }
+  }
+
+  // 当前登录身份（后台页面进场时用）
+  if (pathname === '/api/admin/me' && req.method === 'GET') {
+    const auth = checkAdmin(req);
+    if (!auth) return sendJson(res, 401, { error: '需要后台登录' });
+    return sendJson(res, 200, { role: auth.role, username: auth.username, displayName: auth.displayName, agents: auth.role === 'super' ? publicAgents() : [] });
+  }
+
+  // 前台用的分账号公开名单（只有账号名和显示名，没有密码）
+  if (pathname === '/api/agents' && req.method === 'GET') {
+    return sendJson(res, 200, publicAgents());
   }
 
   // 客户查单（不用后台密码）：凭下单时填的身份证号查自己的订单
@@ -183,16 +252,18 @@ const server = http.createServer(async (req, res) => {
 
   // 分组汇总（后台，要密码）：按归一化演唱会名 + 场次时间分组
   if (pathname === '/api/groups' && req.method === 'GET') {
-    if (!checkAdmin(req)) return sendJson(res, 401, { error: '需要后台密码' });
-    return sendJson(res, 200, buildGroups(loadOrders()));
+    const auth = checkAdmin(req);
+    if (!auth) return sendJson(res, 401, { error: '需要后台密码' });
+    return sendJson(res, 200, buildGroups(visibleOrders(loadOrders(), auth)));
   }
 
   // 导出 CSV（后台，要密码）
   if (pathname === '/api/orders/export' && req.method === 'GET') {
-    if (!checkAdmin(req)) return sendJson(res, 401, { error: '需要后台密码' });
-    const list = loadOrders();
-    const head = ['订单号', '分组（演唱会+场次）', '演唱会', '场次时间', '价位', '单价', '张数', '合计', '座位偏好', '姓名', '身份证号', '电话', '备注', '状态', '下单时间'];
-    const rows = list.map(o => [o.id, (o.groupKey || groupKeyFor(o.concert, o.datetime)), o.concert, o.datetime, o.priceTier, o.unitPrice, o.quantity, o.total, o.seat, o.name, o.idNumber, o.phone, o.note, o.status, o.createdAt]);
+    const auth = checkAdmin(req);
+    if (!auth) return sendJson(res, 401, { error: '需要后台密码' });
+    const list = visibleOrders(loadOrders(), auth);
+    const head = ['订单号', '归属账号', '分组（演唱会+场次）', '演唱会', '场次时间', '价位', '单价', '张数', '合计', '座位偏好', '姓名', '身份证号', '电话', '备注', '状态', '下单时间'];
+    const rows = list.map(o => [o.id, (o.agentName || o.agent || '未分配'), (o.groupKey || groupKeyFor(o.concert, o.datetime)), o.concert, o.datetime, o.priceTier, o.unitPrice, o.quantity, o.total, o.seat, o.name, o.idNumber, o.phone, o.note, o.status, o.createdAt]);
     const csv = '\ufeff' + [head, ...rows].map(r => r.map(csvEscape).join(',')).join('\n');
     res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="orders.csv"' });
     return res.end(csv);
@@ -200,18 +271,20 @@ const server = http.createServer(async (req, res) => {
 
   // SSE：后台实时收到新订单（要密码）
   if (pathname === '/api/stream' && req.method === 'GET') {
-    if (!checkAdmin(req)) return sendJson(res, 401, { error: '需要后台密码' });
+    const auth = checkAdmin(req);
+    if (!auth) return sendJson(res, 401, { error: '需要后台密码' });
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write(': connected\n\n');
-    clients.add(res);
+    clients.set(res, auth);
     req.on('close', () => clients.delete(res));
     return;
   }
 
   if (pathname === '/api/orders') {
     if (req.method === 'GET') {
-      if (!checkAdmin(req)) return sendJson(res, 401, { error: '需要后台密码' });
-      return sendJson(res, 200, loadOrders());
+      const auth = checkAdmin(req);
+      if (!auth) return sendJson(res, 401, { error: '需要后台密码' });
+      return sendJson(res, 200, visibleOrders(loadOrders(), auth));
     }
     if (req.method === 'POST') {
       if (rateLimited(ip)) return sendJson(res, 429, { error: '提交太频繁，稍后再试' });
@@ -223,8 +296,13 @@ const server = http.createServer(async (req, res) => {
         if (!/^1[3-9]\d{9}$/.test(String(b.phone))) return sendJson(res, 400, { error: '手机号格式不对' });
         if (!/^(\d{15}|\d{17}[\dXx])$/.test(String(b.idNumber).trim())) return sendJson(res, 400, { error: '身份证号格式不对' });
         const list = loadOrders();
+        // 归属：body.agent 或 ?agent=，必须是已配置的分账号，否则归“未分配”（只有总账号能看到）
+        const agentParam = String(b.agent || url.searchParams.get('agent') || '').trim();
+        const agentObj = agentParam ? agentByUsername(agentParam) : null;
         const order = {
           id: 'YC' + Date.now().toString().slice(-8) + Math.floor(Math.random() * 90 + 10),
+          agent: agentObj ? agentObj.username : null,
+          agentName: agentObj ? agentObj.displayName : '',
           concert: String(b.concert).trim(),
           datetime: normalizeDatetime(b.datetime),
           groupKey: groupKeyFor(b.concert, b.datetime),
@@ -252,11 +330,12 @@ const server = http.createServer(async (req, res) => {
 
   const m = pathname.match(/^\/api\/orders\/([\w-]+)$/);
   if (m) {
-    if (!checkAdmin(req)) return sendJson(res, 401, { error: '需要后台密码' });
+    const auth = checkAdmin(req);
+    if (!auth) return sendJson(res, 401, { error: '需要后台密码' });
     const id = m[1];
     const list = loadOrders();
     const idx = list.findIndex(o => o.id === id);
-    if (idx === -1) return sendJson(res, 404, { error: '订单不存在' });
+    if (idx === -1 || !canSeeOrder(list[idx], auth)) return sendJson(res, 404, { error: '订单不存在' });
     if (req.method === 'PATCH') {
       try { const b = await readBody(req); if (b.status) list[idx].status = b.status; saveOrders(list); broadcast(); return sendJson(res, 200, list[idx]); }
       catch (e) { return sendJson(res, 400, { error: e.message }); }
