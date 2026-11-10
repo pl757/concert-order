@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>演唱会下单</title>
+<style>
+*{box-sizing:border-box} body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f6f6f8;color:#222}
+.wrap{max-width:640px;margin:0 auto;padding:20px 16px 80px}
+h1{font-size:22px;margin:4px 0 4px} .sub{color:#666;font-size:14px;margin-bottom:18px}
+.card{background:#fff;border-radius:14px;padding:18px;box-shadow:0 2px 12px rgba(0,0,0,.06)}
+label{display:block;font-size:14px;font-weight:600;margin:14px 0 6px}
+input,select,textarea{width:100%;padding:11px 12px;border:1px solid #ddd;border-radius:10px;font-size:15px}
+input:focus,select:focus,textarea:focus{outline:2px solid #e60023;border-color:#e60023}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.chip{border:1px solid #ddd;background:#fff;border-radius:999px;padding:7px 12px;font-size:13px;cursor:pointer}
+.chip.on{background:#e60023;color:#fff;border-color:#e60023}
+.total{margin-top:16px;background:#fff5f5;border:1px dashed #ffb3bd;border-radius:10px;padding:12px;font-size:15px}
+.total b{color:#e60023;font-size:20px}
+.copybox{margin-top:16px;background:#f7f7fa;border-radius:10px;padding:12px}
+.copybox pre{white-space:pre-wrap;font-family:inherit;margin:8px 0;font-size:14px;line-height:1.7}
+.btn{width:100%;padding:14px;border:0;border-radius:12px;background:#e60023;color:#fff;font-size:16px;font-weight:700;cursor:pointer;margin-top:16px}
+.btn:disabled{opacity:.5}.btn.ghost{background:#fff;color:#e60023;border:1px solid #e60023}
+.miss{color:#e60023;font-size:13px}.ok{color:#07a35a;font-size:13px}
+.success{display:none;text-align:center}.success h2{color:#07a35a}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎤 演唱会下单</h1>
+  <p class="sub">填写信息并提交，不需要付费，提交后工作人员会在后台看到你的订单。</p>
+
+  <div class="card" id="formCard">
+    <label>演唱会名称 *</label>
+    <input id="concert" placeholder="例如：周杰伦嘉年华世界巡回演唱会">
+    <label>场次时间 *</label>
+    <input id="datetime" type="datetime-local">
+    <label>价位 *</label>
+    <div class="chips" id="tiers">
+      <button type="button" class="chip" data-v="内场">内场</button>
+      <button type="button" class="chip" data-v="看台">看台</button>
+    </div>
+    <select id="priceTier" style="margin-top:8px">
+      <option value="">请选择价位</option>
+      <option>内场</option>
+      <option>看台</option>
+    </select>
+    <div class="row">
+      <div><label>单价（元）*</label><input id="unitPrice" type="number" min="0" value="1280"></div>
+      <div><label>张数 *</label><input id="quantity" type="number" min="1" value="1"></div>
+    </div>
+    <div class="total">合计：<b id="totalText">¥1,280</b> <span style="color:#666;font-size:13px">（提交后不付费）</span></div>
+    <label>座位偏好</label>
+    <input id="seat" placeholder="例如：连座、靠前">
+    <label>姓名 *</label>
+    <input id="name" placeholder="购票人姓名">
+    <label>身份证号 *</label>
+    <input id="idNumber" placeholder="15位或18位身份证号" inputmode="numeric">
+    <label>联系电话 *</label>
+    <input id="phone" placeholder="11位手机号" inputmode="tel">
+    <label>备注</label>
+    <textarea id="note" rows="2" placeholder="其他想说的话（选填）"></textarea>
+
+    <div class="copybox">
+      <b>📋 一键复制（日期 / 价位 / 名字 / 身份信息）</b>
+      <div id="miss" class="miss"></div>
+      <pre id="preview">请先填齐上面带 * 的信息</pre>
+      <button class="btn ghost" id="copyBtn" type="button">复制这五项信息</button>
+      <div id="copyTip" class="ok"></div>
+    </div>
+
+    <button class="btn" id="submitBtn" type="button">提交订单</button>
+    <p id="err" style="color:#e60023"></p>
+  </div>
+
+  <div class="card success" id="successCard">
+    <h2>✅ 提交成功</h2>
+    <p>订单号：<b id="orderId"></b></p>
+    <p style="color:#666">工作人员已在后台看到你的订单，请保持电话畅通。</p>
+    <button class="btn" id="copyOrderBtn" type="button" style="background:#e60023">一键复制这单信息</button>
+    <button class="btn ghost" type="button" onclick="location.reload()">再下一单</button>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let lastOrder = null;
+
+document.querySelectorAll('#tiers .chip').forEach(c => c.onclick = () => {
+  document.querySelectorAll('#tiers .chip').forEach(x => x.classList.remove('on'));
+  c.classList.add('on'); $('priceTier').value = c.dataset.v; update();
+});
+function fmt(n){ return '¥' + Number(n||0).toLocaleString(); }
+function fiveLines(){
+  return [
+    '场次：' + ($('datetime').value ? $('datetime').value.replace('T',' ') : ''),
+    '价位：' + $('priceTier').value + ' ' + fmt($('unitPrice').value) + '/张 × ' + $('quantity').value + ' 张',
+    '姓名：' + $('name').value,
+    '身份证：' + $('idNumber').value,
+    '电话：' + $('phone').value,
+  ].join('\n');
+}
+function update(){
+  const total = (Number($('unitPrice').value)||0) * (Number($('quantity').value)||1);
+  $('totalText').textContent = fmt(total);
+  const miss = [];
+  if (!$('datetime').value) miss.push('场次时间');
+  if (!$('priceTier').value) miss.push('价位');
+  if (!$('name').value) miss.push('姓名');
+  if (!$('idNumber').value) miss.push('身份证');
+  if (!$('phone').value) miss.push('电话');
+  $('miss').textContent = miss.length ? '还差：' + miss.join('、') : '已填齐，可以复制了';
+  $('preview').textContent = miss.length ? '请先填齐上面带 * 的信息' : fiveLines();
+}
+['concert','datetime','priceTier','unitPrice','quantity','name','idNumber','phone'].forEach(id => $(id).addEventListener('input', update));
+update();
+
+async function copyText(t, tipEl){
+  try { await navigator.clipboard.writeText(t); }
+  catch { const ta=document.createElement('textarea'); ta.value=t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  if (tipEl) tipEl.textContent = '已复制，去粘贴吧 ✓';
+}
+$('copyBtn').onclick = () => copyText(fiveLines(), $('copyTip'));
+$('copyOrderBtn').onclick = () => {
+  if (!lastOrder) return;
+  const t = '订单号：' + lastOrder.id + '\n' + fiveLines();
+  copyText(t, null); $('copyOrderBtn').textContent = '已复制 ✓';
+};
+
+$('submitBtn').onclick = async () => {
+  $('err').textContent = '';
+  const body = {
+    concert: $('concert').value.trim(), datetime: $('datetime').value,
+    priceTier: $('priceTier').value.trim(), unitPrice: Number($('unitPrice').value),
+    quantity: Number($('quantity').value), seat: $('seat').value.trim(),
+    name: $('name').value.trim(), idNumber: $('idNumber').value.trim(),
+    phone: $('phone').value.trim(), note: $('note').value.trim(),
+  };
+  if (!body.concert || !body.datetime || !body.priceTier || !body.name || !body.idNumber || !body.phone) {
+    $('err').textContent = '请填齐带 * 的信息'; return;
+  }
+  $('submitBtn').disabled = true; $('submitBtn').textContent = '提交中…';
+  try {
+    const r = await fetch('/api/orders', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || '提交失败');
+    lastOrder = d;
+    $('orderId').textContent = d.id;
+    $('formCard').style.display = 'none'; $('successCard').style.display = 'block';
+    window.scrollTo(0,0);
+  } catch(e){ $('err').textContent = e.message; }
+  finally { $('submitBtn').disabled = false; $('submitBtn').textContent = '提交订单'; }
+};
+</script>
+</body>
+</html>

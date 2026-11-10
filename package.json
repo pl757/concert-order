@@ -1,0 +1,1 @@
+{"description":"演唱会下单工作台正式版（国内云）：前台填单，后台实时看单，带密码和持久存储","engines":{"node":">=16"},"main":"server.js","name":"concert-order-workbench","scripts":{"start":"node server.js"},"version":"2.0.0"}

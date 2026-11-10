@@ -1,0 +1,22 @@
+# Render 一键部署配置（Blueprint）
+# 用法：把代码传到 GitHub 后，在 Render 点 New → Blueprint，选这个仓库即可
+# 它会自动创建 Web Service + 持久磁盘，并提示你填后台密码
+services:
+  - type: web
+    name: concert-order
+    env: node
+    plan: starter
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DATA_DIR
+        value: /data/concert-order
+    disk:
+      name: concert-data
+      mountPath: /data
+      sizeGB: 1
